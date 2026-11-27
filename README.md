@@ -54,6 +54,7 @@ The same commit, `1.43.0-dev-b7e32da0`, built with `make` under WSL on the same 
 | Reader | Out of order | `:done` before its data | Hung |
 |---|---|---|---|
 | `ev/select` | 20 of 20 | 5 | 0 |
+| `ev/take` (control) | 0 of 20 | 0 | 0 |
 
 ```
 run 1: hung false, got 2999 of 3000, in order false, held when the reader stopped 1, left after @[2999]
