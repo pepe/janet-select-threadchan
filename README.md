@@ -47,7 +47,19 @@ run 2: hung false, got 2999 of 3000, in order false, held when the reader stoppe
 
 So the end marker in the hang was neither lost nor held in the channel: it was in flight for as long as the plain channel kept waking the reader, and arrived within a turn of the loop once nothing did. A feeder slow enough to let a turn pass between ticks ends the hangs, and makes the reordering rarer but not gone.
 
-Not yet run under Linux.
+### Linux
+
+The same commit, `1.43.0-dev-b7e32da0`, built with `make` under WSL on the same Windows 11 machine, the feeder every 0.0001 s:
+
+| Reader | Out of order | `:done` before its data | Hung |
+|---|---|---|---|
+| `ev/select` | 20 of 20 | 5 | 0 |
+
+```
+run 1: hung false, got 2999 of 3000, in order false, held when the reader stopped 1, left after @[2999]
+```
+
+The reordering is the same. There is no hang, and a value overtaken by `:done` is already in the channel when the reader stops (held 1), where on Windows it was still in flight (held 0) and landed only afterwards.
 
 ## What it points at
 
@@ -67,6 +79,8 @@ When `janet_thread_chan_cb` finds the read it was posted to stale, it does not d
 
 The value never lands among the channel's items, so `ev/count` says 0. Once the reader's select is cancelled, no fresh read is registered, the resend finds `read_pending` empty and pushes the value back into the items: that is when `:done` shows up. It happens at the end because during the run the writer's next give keeps things moving; after the last value nothing does.
 
+**Why only Windows.** On Linux (epoll) and the BSDs and macOS (kqueue), a posted event comes through the self-pipe, and `janet_ev_handle_selfpipe` reads it until it is empty (`goto recur`): an event the callback posts to its own thread is handled in the same poll, before any fiber runs, so the read it goes to is still live. On Windows, `janet_loop1_impl` takes one completion from the port per turn of the loop, so the reposted event waits a turn, and the feeder makes the read stale again in between. The resend is the same everywhere; only Windows gives the reader the turn to slip away.
+
 The reordering needs no loop: the writer hands value *i* to a stale read (it may not look at a fiber of another thread), hands *i+1* to the reader's fresh one, and when the callback for *i* finds its read stale, *i+1* has already been delivered.
 
 ## Experiments
@@ -81,7 +95,7 @@ FEED=0.01 janet repro.janet    # feed the plain channel every 10 ms
 - **`QUIET=1`.** When the reader has all `n` values and no `:done`, it stops the feeder and goes on selecting exactly as before; nothing is cancelled. Each such run is printed with how long `:done` took after the stop. If the hypothesis holds, the runs that hung without it now end, with `:done` arriving within a few ms of the stop. If they still hang to the deadline, the value is held somewhere else, and the hypothesis is wrong.
 - **`FEED=0.01`.** A bounce needs the reader woken between every repost and its handling, so with a tick only every 10 ms it should get through within a turn: the hangs should vanish. The reordering needs a tick while the writer is giving, so it should become rarer too, without the explanation predicting it gone.
 
-Both have been run on Windows; their results are under "Results". A run under Linux (or WSL) as well would show it is not Windows-specific, which nothing in the mechanism suggests it is.
+Both have been run on Windows; their results are under "Results". On Linux nothing hangs to begin with (see "Why only Windows"), so they tell nothing there.
 
 Plain `ev/take` on the same channel is clean, so the stale select read is what triggers it.
 
