@@ -32,7 +32,35 @@ run 2: hung false, got 2999 of 3000, in order false, held when the reader stoppe
 
 A give to a threaded channel hands its value to the first queued reader by posting an event to that reader's thread, without checking whether the reader still wants it (`janet_thread_chan_cb`, `src/core/ev.c`). A select answered by its other channel leaves its read queued on the threaded channel. The next give goes to that stale read. The callback then passes the value on or pushes it back, but by then a later give from the same writer may already have reached the next select.
 
-Upstream `cd946c45` ("Apply fix for threaded channels 'eating' values") made the callback keep such a value instead of freeing it, and it is in the Janet tested here. The value is kept, but not in order, and in the hang not delivered until the select is cancelled. The code path that holds it during the hang has not been located yet.
+Upstream `cd946c45` ("Apply fix for threaded channels 'eating' values") made the callback keep such a value instead of freeing it, and it is in the Janet tested here. The value is kept, but not in order, and in the hang not delivered until the select is cancelled.
+
+### The hang, as the source reads (a hypothesis, tested below)
+
+When `janet_thread_chan_cb` finds the read it was posted to stale, it does not deliver the value: it pops the next read from `read_pending` and posts the value to it again, as a new event (`src/core/ev.c`, the resend under "Fiber has already been canceled or resumed"). The next read is usually the one the reader's newest select registered.
+
+`janet_loop1` runs expired timers, then the scheduled fibers, and only then polls events. The feeder sleeps 0.0001 s, so its timer has expired on every turn, and every turn goes:
+
+1. The feeder gives `:tick` to the plain channel. That wakes the reader (`janet_schedule` raises its `sched_id`), so its read on the threaded channel is stale.
+2. The reader selects again and registers a fresh read.
+3. Only now is the posted event handled. It finds its read stale, and posts the value to the fresh one.
+
+The value never lands among the channel's items, so `ev/count` says 0. Once the reader's select is cancelled, no fresh read is registered, the resend finds `read_pending` empty and pushes the value back into the items: that is when `:done` shows up. It happens at the end because during the run the writer's next give keeps things moving; after the last value nothing does.
+
+The reordering needs no loop: the writer hands value *i* to a stale read (it may not look at a fiber of another thread), hands *i+1* to the reader's fresh one, and when the callback for *i* finds its read stale, *i+1* has already been delivered.
+
+## Experiments
+
+The hypothesis says the end marker is not lost or stuck in the channel: it is bounced from read to read for as long as the plain channel keeps waking the reader. Two switches test that.
+
+```sh
+QUIET=1 janet repro.janet      # stop the feeder once all n values are in
+FEED=0.01 janet repro.janet    # feed the plain channel every 10 ms
+```
+
+- **`QUIET=1`.** When the reader has all `n` values and no `:done`, it stops the feeder and goes on selecting exactly as before; nothing is cancelled. Each such run is printed with how long `:done` took after the stop. If the hypothesis holds, the runs that hung without it now end, with `:done` arriving within a few ms of the stop. If they still hang to the deadline, the value is held somewhere else, and the hypothesis is wrong.
+- **`FEED=0.01`.** A bounce needs the reader woken between every repost and its handling, so with a tick only every 10 ms it should get through within a turn: the hangs should vanish. The reordering needs a tick while the writer is giving, so it should become rarer too, without the explanation predicting it gone.
+
+Neither experiment has been run yet. Their results belong under "Results", with the Janet build they were run on; a run under Linux (or WSL) as well would show it is not Windows-specific, which nothing in the mechanism suggests it is.
 
 Plain `ev/take` on the same channel is clean, so the stale select read is what triggers it.
 
