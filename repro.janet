@@ -19,7 +19,11 @@
 
 (def take-only (= "take" (os/getenv "MODE")))
 (def quiet (truthy? (os/getenv "QUIET")))
-(def feed (scan-number (or (os/getenv "FEED") "0.0001")))
+(def feed
+  # PowerShell writes $env:FEED=0.01 in the locale's own way, as "0,01".
+  (let [given (or (os/getenv "FEED") "0.0001")]
+    (or (scan-number (string/replace-all "," "." given))
+        (errorf "FEED must be a number of seconds, not %q" given))))
 (def n (scan-number (or (os/getenv "N") "3000")))
 (def runs (scan-number (or (os/getenv "RUNS") "20")))
 
@@ -94,8 +98,8 @@
             (res :held-at-stop) (res :left)
             (cond
               (res :done-after)
-              (string/format ", :done came %.1f ms after the feeder stopped"
-                             (* 1000 (res :done-after)))
+              (string/format ", :done came %d microseconds after the feeder stopped"
+                             (math/round (* 1e6 (res :done-after))))
               (res :quieted) ", the feeder stopped and :done still did not come"
               ""))))
 (printf (string "janet %s-%s, %s, FEED %q%s: %d of %d runs wrong "
